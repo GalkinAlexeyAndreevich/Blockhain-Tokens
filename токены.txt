@@ -1,0 +1,212 @@
+// contracts/GLDToken.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+
+contract CryptoMonster is ERC20, ERC20Burnable {
+    // Структура пользователя
+    struct User {
+        uint role; // 0 - owner, 1 - private, 2 - public, 3 - user
+        bytes32 password; // пароль
+        bool inWhitelist; // true - пользователь попал в белый список, false - пользователь не в белом списке
+    }
+
+    //
+    struct WhiteListRequest {
+        string name; //
+        address adr; //
+    }
+
+    address owner; //
+    address privateProvider; //
+    address publicProvider; //
+    address seedProvider; //
+
+    uint currentPhase = 0; // Текущая фаза: 0 - prepare, 1 - private, 2 - public
+
+    uint Time_start; // Время запуска
+    uint Time_dif = 0; // Смещение
+    uint Time_private_start; // Время начала приватной фазы (для таймера)
+    uint Time_public_start; // Время начала публичной фазы (для таймера)
+
+    uint privateRate = 750000000000000; // Курс в приватной фазе
+    uint publicRate = 1000000000000000; // Курс в публичной фазе
+
+    address[] public RegisteredUsers; // Массив всех зареганных пользователей
+    WhiteListRequest[] public WhiteListRequests; // Массив всех запросов в белый лист
+    mapping(address => User) Users; // Маппинг всех пользователей
+
+
+    constructor() ERC20("CryptoMonster", "CMON") {
+        _mint(msg.sender, 10000000 * 10**decimals() ); // 1 CMON = 1 * 10**12
+        Time_start = block.timestamp;
+
+        owner = msg.sender;
+        registration(owner, 0x64e604787cbf194841e7b68d7cd28786f6c9a0a3ab9f8b0a0e87cb4387ab0107); // owner 123
+        Users[owner].role = 0;
+
+        privateProvider = 0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2;
+        registration(0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2, 0x64e604787cbf194841e7b68d7cd28786f6c9a0a3ab9f8b0a0e87cb4387ab0107); // private 123
+        Users[0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2].role = 1;
+        approve(0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2, balanceOf(msg.sender) / 100 * 30);
+
+        publicProvider = 0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db;
+        registration(0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db, 0x64e604787cbf194841e7b68d7cd28786f6c9a0a3ab9f8b0a0e87cb4387ab0107); // public 123
+        Users[0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db].role = 2;
+        approve(0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db, balanceOf(msg.sender) / 100 * 60);
+
+        seedProvider = 0x78731D3Ca6b7E34aC0F824c42a7cC18A495cabaB;
+        registration(0x78731D3Ca6b7E34aC0F824c42a7cC18A495cabaB, 0x64e604787cbf194841e7b68d7cd28786f6c9a0a3ab9f8b0a0e87cb4387ab0107); // seed 123
+        Users[0x78731D3Ca6b7E34aC0F824c42a7cC18A495cabaB].role = 3;
+        approve(0x78731D3Ca6b7E34aC0F824c42a7cC18A495cabaB, balanceOf(msg.sender) / 100 * 10);
+
+        // Добавить перевод сида на адреса сонсоров
+    }
+
+    // Проверка, что пользователь уже зарегистрирован
+    modifier isReg (address _adr) {
+        require(Users[_adr].password != bytes32(0), "User is not registered");
+        _;
+    }
+
+    // Функция регистрации пользователя в системе
+    function registration(address _adr, bytes32 password) public virtual {
+        require(Users[_adr].password == bytes32(0), "user are registered");
+        Users[_adr].role = 4;
+        Users[_adr].password = password;
+        Users[_adr].inWhitelist = false;
+        RegisteredUsers.push(_adr);
+    }
+
+    // Функция авторизации пользователя
+    function auth(address _adr, bytes32 password) isReg(_adr) public view returns(bool) {
+        return Users[_adr].password == password;
+    }
+
+    // Функция создания запроса на добавление в белый лист
+    function createRequest(string memory name) isReg(msg.sender) public virtual {
+        _checkPhase();
+        require(Users[msg.sender].inWhitelist == false, "You already in white list");
+        require(currentPhase == 0, "Only in preparation phase you can send requests");
+        WhiteListRequests.push(WhiteListRequest(name, msg.sender));
+    }
+
+    // Фукнция для подтверждения запроса на добавление пользователя в белый лист
+    function acceptRequest(uint requestId, bool answer) isReg(msg.sender) public virtual {
+        _checkPhase();
+        require(Users[msg.sender].role == 1, "Only private provider can do this");
+        require(requestId <WhiteListRequests.length, "Id is out of range");
+        require(Users[WhiteListRequests[requestId].adr].inWhitelist == false, "This user is already in white list");
+        require(currentPhase == 0, "Only in preparation phase you can answer to requests");
+        if (answer == true){
+            Users[WhiteListRequests[requestId].adr].inWhitelist = true;
+        }
+        else{
+            delete WhiteListRequests[requestId];
+        }
+    }
+
+    // Функция изменения курса провайдером
+    function changePublicRate(uint newRate) public {
+        _checkPhase();
+        require(Users[msg.sender].role == 2, "Only publiv provider can do this");
+        require(newRate > 0, "You cant set rate equals 0");
+        publicRate = newRate;
+    }
+
+    // Функция перевода токенов между юзерами
+    // function transferTokens()
+
+    // Функция покупки токенов у провайдера
+    function buyTokens(uint amountTokens) public  payable {
+        _checkPhase();
+        if (currentPhase == 1){
+            require(Users[msg.sender].inWhitelist == true, "You need to be in white list to buy in the private phase");
+            require(amountTokens <= 100000*10**12, "You can buy maximum 100000 tokens in private phase");
+            require(msg.value == amountTokens * privateRate, "You dont have enough money 1");
+            require(allowance(owner, privateProvider) >= amountTokens, "Private provider dont have enough tokens");
+            _transfer(owner, msg.sender, amountTokens);
+            _approve(owner, privateProvider, allowance(owner, privateProvider) - amountTokens);
+        }
+        else if (currentPhase == 2){
+            require(amountTokens <= 5000*10**12, "You can buy maximum 5000 tokens in public phase");
+            require(msg.value * 10 ** 12 == amountTokens * publicRate * 10 ** 12 , "You dont have enough money 2");
+            require(allowance(owner, publicProvider) >= amountTokens, "Private provider dont have enough tokens");
+            _transfer(owner, msg.sender, amountTokens);
+            _approve(owner, publicProvider, allowance(owner, privateProvider) - amountTokens);
+        }
+        else {
+            require(currentPhase == 1 || currentPhase == 2, "You cant buy tokens now");
+        }
+    }
+
+
+    // Функция ускорения на 1 минуту
+    function speedUp() public{
+        _checkPhase();
+        Time_dif += 60;
+    }
+    function speedUpV2(uint countMinutes) public{
+        _checkPhase();
+        Time_dif += 60 *countMinutes;
+    }
+
+
+    // ? Функция передачи токенов публичным провайдером спонсору
+    // function commandTransfer()
+
+    // Функция передачи права распоряжения своими токенами
+    // function giveApprove(address user) public {}
+
+    // Хук проверки и изменения фазы
+    function _checkPhase() internal virtual {
+        if (currentPhase != 2){
+            if ( currentPhase == 0 && (block.timestamp + Time_dif) >= Time_start + (5 * 60)){
+                currentPhase = 1;
+            }
+            if(currentPhase == 1 && (block.timestamp + Time_dif) >= Time_start + (15 * 60)){
+                currentPhase = 2;
+            }
+        }
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 12;
+    }
+
+    function returnSystemTime() public view returns (uint) {
+        return block.timestamp + Time_dif;
+    }
+
+    function returnBalanceOf(address user) public view returns(uint){
+        return balanceOf(user);
+    }
+
+    function returnAllowanceProvider(address provider) public view returns(uint){
+        return allowance(owner, provider);
+    }
+
+    function returnCurrentPhase() public view returns(uint){
+        return currentPhase;
+    }
+
+    function returnPublicRate() public view returns(uint){
+        return publicRate;
+    }
+
+    function weiToToken(uint value) public view returns(uint){
+        uint count = 0;
+        require(value > 0, "You dont have enough money ");
+        if(value>publicRate){
+            count = value/publicRate * 10 ** 12;
+        }
+        else{
+           count = 10 ** 12/(publicRate/value); 
+        }
+        return count;
+    }
+    
+}
